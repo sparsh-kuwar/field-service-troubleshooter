@@ -23,3 +23,7 @@ MIN_CHUNK_SCORE = float(os.getenv("MIN_CHUNK_SCORE", "0.25"))
 ESCALATION_SCORE = float(os.getenv("ESCALATION_SCORE", "0.35"))
 
 SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
+
+# When set, POST /ingest and POST /manuals require the header "X-Admin-Token: <value>".
+# Use this on public deployments so visitors can query but cannot upload or re-embed.
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN") or None

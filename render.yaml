@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: field-service-troubleshooter
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false   # prompted for during the one-click deploy
+      - key: ADMIN_TOKEN
+        generateValue: true   # locks uploads/re-indexing on the public demo

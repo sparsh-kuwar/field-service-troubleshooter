@@ -1,7 +1,10 @@
+import logging
+import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -10,12 +13,20 @@ from app.agents import Orchestrator
 from app.ingest import build_index
 from app.vectorstore import VectorStore
 
+log = logging.getLogger("uvicorn.error")
 state: dict = {"store": None}
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     state["store"] = VectorStore.load(config.INDEX_DIR)
+    # Fresh cloud containers start without an index: build it from the bundled manuals.
+    if state["store"] is None and os.getenv("OPENAI_API_KEY"):
+        try:
+            state["store"] = build_index(config.MANUALS_DIR, config.INDEX_DIR)
+            log.info("Built index with %d chunks on startup", len(state["store"].chunks))
+        except Exception as e:  # keep serving; /ingest can be retried
+            log.warning("Could not build index on startup: %s", e)
     yield
 
 
@@ -26,6 +37,11 @@ class TroubleshootRequest(BaseModel):
     question: str = Field(min_length=3, examples=["Unit shows E1 and won't light, clicking but no flame"])
     equipment: str | None = Field(default=None, examples=["ThermaFlow TF-200"])
     top_k: int = Field(default=config.TOP_K, ge=1, le=20)
+
+
+def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    if config.ADMIN_TOKEN and not secrets.compare_digest(x_admin_token or "", config.ADMIN_TOKEN):
+        raise HTTPException(403, "Re-indexing and uploads are disabled on this deployment.")
 
 
 def _rebuild() -> dict:
@@ -55,16 +71,17 @@ def health():
         "chunks": len(store.chunks) if store else 0,
         "chat_model": config.CHAT_MODEL,
         "embed_model": config.EMBED_MODEL,
+        "admin_locked": config.ADMIN_TOKEN is not None,
     }
 
 
-@app.post("/ingest")
+@app.post("/ingest", dependencies=[Depends(require_admin)])
 def ingest():
     """Re-embed every manual in the manuals directory and rebuild the FAISS index."""
     return _rebuild()
 
 
-@app.post("/manuals")
+@app.post("/manuals", dependencies=[Depends(require_admin)])
 def upload_manual(file: UploadFile):
     """Upload a PDF/TXT/MD manual, then rebuild the index."""
     name = Path(file.filename or "").name

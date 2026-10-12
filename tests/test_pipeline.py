@@ -90,3 +90,16 @@ def test_insufficient_evidence_escalates(store):
         "E1 ignition failure igniter gas pressure")
     assert result.status == "escalated"
     assert result.escalation["closest_manual_sections"]
+
+
+def test_admin_token_locks_ingest_and_upload(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import main
+    monkeypatch.setattr(main.config, "ADMIN_TOKEN", "secret")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with TestClient(main.app) as client:
+        assert client.post("/ingest").status_code == 403
+        assert client.post("/ingest", headers={"X-Admin-Token": "wrong"}).status_code == 403
+        assert client.post("/manuals", files={"file": ("m.md", b"# x")}).status_code == 403
+        assert client.get("/health").json()["admin_locked"] is True
