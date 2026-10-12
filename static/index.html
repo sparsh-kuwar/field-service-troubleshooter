@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field-Service Troubleshooter</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #667085; --border: #e3e6eb;
+    --accent: #2457d6; --ok: #137a3f; --ok-bg: #e7f6ed; --warn: #a15c00; --warn-bg: #fff4e0;
+    --danger: #b42318; --danger-bg: #fdecea;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 20px 0 8px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  textarea, input[type=text] { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+  textarea { min-height: 80px; resize: vertical; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-top: 12px; }
+  .row > .grow { flex: 1 1 240px; }
+  button { padding: 9px 16px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button.secondary { background: #fff; color: var(--accent); }
+  button:disabled { opacity: .6; cursor: wait; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+  .resolved { background: var(--ok-bg); color: var(--ok); }
+  .escalated { background: var(--warn-bg); color: var(--warn); }
+  .warn-box { background: var(--danger-bg); color: var(--danger); border-radius: 8px; padding: 10px 12px; margin: 6px 0; }
+  .esc-box { background: var(--warn-bg); border-radius: 8px; padding: 10px 12px; }
+  ol, ul { padding-left: 22px; margin: 0; }
+  li { margin: 4px 0; }
+  .cite { display: inline-block; font-size: 11px; font-weight: 600; color: var(--accent); background: #eaf0fd; border: 0; border-radius: 4px; padding: 1px 6px; margin-left: 4px; cursor: pointer; }
+  details { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  details.flash { outline: 2px solid var(--accent); }
+  summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+  pre { white-space: pre-wrap; font: 13px/1.5 ui-monospace, Menlo, monospace; margin: 8px 0 0; }
+  .error { color: var(--danger); }
+  .examples button { background: #fff; color: var(--text); border: 1px solid var(--border); font-weight: 400; font-size: 13px; padding: 4px 10px; margin: 4px 4px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Field-Service Troubleshooter</h1>
+    <span id="health" class="muted">Checking index…</span>
+  </header>
+
+  <form id="ask" class="card">
+    <label for="question">Describe the problem</label>
+    <textarea id="question" required placeholder="e.g. Unit shows E1, igniter clicks but no flame"></textarea>
+    <div class="examples muted">Try:
+      <button type="button">Showing E1, igniter clicks but no flame</button>
+      <button type="button">I smell gas near the heater and it shows E2</button>
+      <button type="button">Forklift hydraulic lift drifts down under load</button>
+    </div>
+    <div class="row">
+      <div class="grow">
+        <label for="equipment">Equipment (optional)</label>
+        <input id="equipment" type="text" placeholder="e.g. ThermaFlow TF-200">
+      </div>
+      <button id="submit" type="submit">Troubleshoot</button>
+    </div>
+  </form>
+
+  <div id="result"></div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Manuals</h2>
+    <p class="muted" style="margin-top:0">Upload a PDF, TXT or MD service manual. The index is rebuilt after each upload.</p>
+    <div class="row" style="margin-top:0">
+      <input id="file" type="file" accept=".pdf,.txt,.md" class="grow">
+      <button id="upload" type="button" class="secondary">Upload &amp; re-index</button>
+      <button id="reindex" type="button" class="secondary">Re-index</button>
+    </div>
+    <p id="manual-status" class="muted"></p>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+  return body;
+}
+
+async function refreshHealth() {
+  try {
+    const h = await api("/health");
+    $("health").textContent = h.index_loaded ? `${h.chunks} manual chunks indexed · ${h.chat_model}` : "No index yet: upload a manual or re-index";
+  } catch { $("health").textContent = "Server unreachable"; }
+}
+
+const cites = (ids) => ids.map((id) => `<button type="button" class="cite" data-chunk="${esc(id)}">${esc(id)}</button>`).join("");
+const where = (e) => [e.source, e.page && `p.${e.page}`, e.section].filter(Boolean).map(esc).join(" · ");
+
+function render(r) {
+  const d = r.diagnosis, x = r.escalation;
+  let html = `<div class="card"><span class="badge ${r.status}">${r.status}</span>`;
+
+  if (d) {
+    html += `<p>${esc(d.summary)} <span class="muted">Confidence: ${esc(d.confidence)}</span></p>`;
+    if (d.safety_warnings.length) html += d.safety_warnings.map((w) => `<div class="warn-box">⚠ ${esc(w.warning)}${cites(w.citations)}</div>`).join("");
+    if (d.likely_causes.length) html += `<h2>Likely causes</h2><ul>${d.likely_causes.map((c) => `<li>${esc(c.cause)}${cites(c.citations)}</li>`).join("")}</ul>`;
+    html += `<h2>Steps</h2><ol>${d.steps.map((s) => `<li>${esc(s.instruction)}${cites(s.citations)}</li>`).join("")}</ol>`;
+  } else if (x) {
+    html += `<div class="esc-box" style="margin-top:12px"><strong>${esc(x.recommended_action)}</strong><br>${esc(x.reason)}</div>`;
+    html += `<h2>Information to collect</h2><ul>${x.information_to_collect.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`;
+  }
+
+  if (r.evidence.length) {
+    html += `<h2>${d ? "Manual sources" : "Closest manual sections"}</h2>`;
+    html += r.evidence.map((e) => `<details id="chunk-${esc(e.chunk_id)}"><summary>${esc(e.chunk_id)} · ${where(e)} <span class="muted">(score ${e.score.toFixed(2)})</span></summary><pre>${esc(e.text)}</pre></details>`).join("");
+  }
+  html += `<details><summary>Agent trace</summary><pre>${esc(JSON.stringify(r.trace, null, 2))}</pre></details></div>`;
+  $("result").innerHTML = html;
+}
+
+$("result").addEventListener("click", (ev) => {
+  const id = ev.target.dataset?.chunk;
+  if (!id) return;
+  const el = $(`chunk-${id}`);
+  if (!el) return;
+  el.open = true;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 1200);
+});
+
+document.querySelectorAll(".examples button").forEach((b) => b.addEventListener("click", () => { $("question").value = b.textContent; $("question").focus(); }));
+
+$("ask").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("submit").disabled = true;
+  $("submit").textContent = "Thinking…";
+  $("result").innerHTML = `<div class="card muted">Running triage → retrieval → grading → diagnosis…</div>`;
+  try {
+    render(await api("/troubleshoot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: $("question").value, equipment: $("equipment").value || null }),
+    }));
+  } catch (e) {
+    $("result").innerHTML = `<div class="card error">${esc(e.message)}</div>`;
+  } finally {
+    $("submit").disabled = false;
+    $("submit").textContent = "Troubleshoot";
+  }
+});
+
+async function manualAction(btn, request) {
+  btn.disabled = true;
+  $("manual-status").textContent = "Indexing…";
+  try {
+    const r = await request();
+    $("manual-status").textContent = `Indexed ${r.chunks} chunks from: ${r.sources.join(", ")}`;
+    refreshHealth();
+  } catch (e) {
+    $("manual-status").innerHTML = `<span class="error">${esc(e.message)}</span>`;
+  } finally { btn.disabled = false; }
+}
+
+$("upload").addEventListener("click", () => {
+  const f = $("file").files[0];
+  if (!f) { $("manual-status").textContent = "Choose a file first."; return; }
+  const form = new FormData();
+  form.append("file", f);
+  manualAction($("upload"), () => api("/manuals", { method: "POST", body: form }));
+});
+$("reindex").addEventListener("click", () => manualAction($("reindex"), () => api("/ingest", { method: "POST" })));
+
+refreshHealth();
+</script>
+</body>
+</html>
