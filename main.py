@@ -20,14 +20,21 @@ state: dict = {"store": None}
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     state["store"] = VectorStore.load(config.INDEX_DIR)
-    # Fresh cloud containers start without an index: build it from the bundled manuals.
+    # Ephemeral disks (e.g. Render free tier) lose the index on every restart:
+    # rebuild it from the manuals committed in the repo before serving requests.
+    _ensure_index()
+    yield
+
+
+def _ensure_index():
+    """Load or build the index if it is missing. Returns the store, or None if it can't be built."""
     if state["store"] is None and os.getenv("OPENAI_API_KEY"):
         try:
             state["store"] = build_index(config.MANUALS_DIR, config.INDEX_DIR)
-            log.info("Built index with %d chunks on startup", len(state["store"].chunks))
-        except Exception as e:  # keep serving; /ingest can be retried
-            log.warning("Could not build index on startup: %s", e)
-    yield
+            log.info("Built index with %d chunks from %s", len(state["store"].chunks), config.MANUALS_DIR)
+        except Exception as e:  # keep serving; retried on the next request
+            log.warning("Could not build index: %s", e)
+    return state["store"]
 
 
 app = FastAPI(title="Field-Service Troubleshooting Assistant", lifespan=lifespan)
@@ -94,9 +101,13 @@ def upload_manual(file: UploadFile):
 
 @app.post("/troubleshoot")
 def troubleshoot(req: TroubleshootRequest):
-    store = state["store"]
+    store = _ensure_index()
     if store is None:
-        raise HTTPException(409, "No index yet. POST /ingest first.")
+        raise HTTPException(
+            503,
+            "The service manuals are still being prepared, or the server isn't configured yet. "
+            "Please try again in a minute; if this keeps happening, the administrator needs to set OPENAI_API_KEY.",
+        )
     try:
         result = Orchestrator(store, llm.embed, llm.chat_json).troubleshoot(req.question, req.equipment, req.top_k)
     except llm.LLMUnavailable as e:

@@ -103,3 +103,15 @@ def test_admin_token_locks_ingest_and_upload(monkeypatch):
         assert client.post("/ingest", headers={"X-Admin-Token": "wrong"}).status_code == 403
         assert client.post("/manuals", files={"file": ("m.md", b"# x")}).status_code == 403
         assert client.get("/health").json()["admin_locked"] is True
+
+
+def test_troubleshoot_without_index_gives_friendly_error(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    import main
+    monkeypatch.setattr(main.config, "INDEX_DIR", tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with TestClient(main.app) as client:
+        r = client.post("/troubleshoot", json={"question": "E1 no flame"})
+        assert r.status_code == 503
+        assert "try again" in r.json()["detail"]

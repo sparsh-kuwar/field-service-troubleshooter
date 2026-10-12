@@ -230,7 +230,13 @@ curl -F file=@my_manual.pdf -H "X-Admin-Token: <token>" https://<your-app>.onren
 
 The same Dockerfile also runs on Railway, Fly.io or Google Cloud Run. The container listens on `$PORT`.
 
-> Free Render instances sleep when idle and have an ephemeral disk. The first request after a sleep takes about 30–60 s while the app wakes up and re-indexes the bundled manual. Uploaded manuals are lost on restart; commit them to `manuals/` to keep them.
+### ⚠️ Uploaded manuals are temporary on the free tier
+
+Render's free instances have an **ephemeral disk** that is wiped on every restart, redeploy or sleep/wake cycle.
+
+- **Bundled manuals are safe.** Anything committed to `manuals/` ships inside the image. If no index exists at startup, the app re-indexes these manuals automatically before serving requests, so the demo always works.
+- **Uploaded manuals are not kept.** Files uploaded through the UI or `POST /manuals` live only until the next restart and then disappear. To make a manual permanent, commit it to `manuals/` and redeploy, or attach a persistent disk (paid plan) and point `MANUALS_DIR` / `INDEX_DIR` at it.
+- **The first request after a sleep is slow.** It takes about 30–60 s while the instance wakes up and rebuilds the index.
 
 ---
 
